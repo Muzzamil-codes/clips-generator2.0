@@ -1,0 +1,6 @@
+*.mp4
+*.avi
+output/
+_temp_*
+.env
+virtualrealm_ytdata_api_client_secret.json
