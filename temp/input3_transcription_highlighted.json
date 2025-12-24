@@ -160,7 +160,7 @@
       "start": 6720,
       "end": 7120,
       "confidence": 1.0,
-      "highlight": true
+      "highlight": false
     },
     {
       "text": "to",
@@ -216,7 +216,7 @@
       "start": 9400,
       "end": 10000,
       "confidence": 0.9144287,
-      "highlight": false
+      "highlight": true
     },
     {
       "text": "problem",
@@ -510,7 +510,7 @@
       "start": 25760,
       "end": 26160,
       "confidence": 0.9987793,
-      "highlight": false
+      "highlight": true
     },
     {
       "text": "problem",
@@ -559,7 +559,7 @@
       "start": 27520,
       "end": 27960,
       "confidence": 0.9123535,
-      "highlight": false
+      "highlight": true
     }
   ],
   "duration_ms": 28000

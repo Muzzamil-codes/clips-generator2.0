@@ -1,0 +1,20 @@
+[
+  {
+    "timestamp": "2025-12-24T20:50:28.486459",
+    "video_file": "output\\input3_final.mp4",
+    "success": false,
+    "video_id": null,
+    "url": null,
+    "title": "@airwallex The #1 Lie About Success They Told You",
+    "error": "<HttpError 400 when requesting None returned \"'notifySubscribers'\". Details: \"[{'message': \"'notifySubscribers'\", 'domain': 'youtube.part', 'reason': 'unknownPart', 'location': 'part', 'locationType': 'parameter'}]\">"
+  },
+  {
+    "timestamp": "2025-12-24T21:38:37.030146",
+    "video_file": ".\\output\\input_final.mp4",
+    "success": true,
+    "video_id": "dvJJCfMYEz8",
+    "url": "https://youtube.com/shorts/dvJJCfMYEz8",
+    "title": "The WORST Advice I Ever Got",
+    "error": null
+  }
+]

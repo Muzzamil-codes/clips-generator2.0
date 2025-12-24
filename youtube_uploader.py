@@ -58,6 +58,7 @@ class YouTubeConfig:
     
     # Shorts settings
     shorts_hashtags: list = None
+    brand_mention: str = "@airwallex"  # Brand mention to add to title
     
     def __post_init__(self):
         if self.shorts_hashtags is None:
@@ -315,8 +316,7 @@ class YouTubeUploader:
             'status': {
                 'privacyStatus': privacy_status or self.config.privacy_status,
                 'selfDeclaredMadeForKids': self.config.made_for_kids,
-            },
-            'notifySubscribers': notify_subscribers
+            }
         }
         
         # Create media upload object
@@ -421,6 +421,11 @@ class YouTubeUploader:
             metadata['title'] = custom_title
         if custom_description:
             metadata['description'] = custom_description
+        
+        # Always add brand mention to title if configured
+        if self.config.brand_mention and not metadata['title'].startswith(self.config.brand_mention):
+            metadata['title'] = f"{self.config.brand_mention} {metadata['title']}"
+            print(f"[INFO] Added brand mention to title: {metadata['title']}")
         
         # Upload the video
         result = self.upload_video(

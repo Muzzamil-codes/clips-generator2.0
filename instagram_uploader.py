@@ -10,7 +10,7 @@ Requirements:
 
 Environment Variables:
     IG_BUSINESS_ACCOUNT_ID: Instagram Business Account ID
-    IG_ACCESS_TOKEN: Long-lived Instagram access token
+    INSTAGRAM_ACCESS_TOKEN: Long-lived Instagram access token
     NGROK_AUTH_TOKEN: (Optional) Ngrok auth token for longer sessions
 """
 
@@ -65,7 +65,7 @@ class InstagramUploader:
         if not self.config.business_account_id:
             raise ValueError("IG_BUSINESS_ACCOUNT_ID not found in environment")
         if not self.config.access_token:
-            raise ValueError("IG_ACCESS_TOKEN not found in environment")
+            raise ValueError("INSTAGRAM_ACCESS_TOKEN not found in environment")
         
         # Try to import ngrok
         try:
@@ -91,16 +91,19 @@ class InstagramUploader:
         Returns:
             Public URL to access the video
         """
-        # Change to video directory
-        original_dir = os.getcwd()
-        os.chdir(video_dir)
+        import functools
         
-        # Start HTTP server
-        self.server = HTTPServer(("", self.config.port), SimpleHTTPRequestHandler)
+        # Create a custom handler that serves from the video directory
+        # This avoids issues with changing the working directory
+        handler = functools.partial(SimpleHTTPRequestHandler, directory=video_dir)
+        
+        # Start HTTP server with the custom handler
+        self.server = HTTPServer(("", self.config.port), handler)
         
         # Establish ngrok tunnel
         self.public_url = self.ngrok.connect(self.config.port)
         print(f"[INSTAGRAM] ngrok tunnel established at: {self.public_url}")
+        print(f"[INSTAGRAM] Serving files from: {video_dir}")
         
         # Start server in background thread
         def serve():
@@ -110,9 +113,6 @@ class InstagramUploader:
         self.server_thread = threading.Thread(target=serve)
         self.server_thread.daemon = True
         self.server_thread.start()
-        
-        # Restore original directory
-        os.chdir(original_dir)
         
         return self.public_url.public_url
     
@@ -344,7 +344,7 @@ if __name__ == "__main__":
     print("=" * 60)
     
     # Check environment variables
-    required_vars = ["IG_BUSINESS_ACCOUNT_ID", "IG_ACCESS_TOKEN"]
+    required_vars = ["IG_BUSINESS_ACCOUNT_ID", "INSTAGRAM_ACCESS_TOKEN"]
     missing = [v for v in required_vars if not os.getenv(v)]
     
     if missing:
@@ -353,7 +353,7 @@ if __name__ == "__main__":
     else:
         print("Environment variables found!")
         print(f"Business Account ID: {os.getenv('IG_BUSINESS_ACCOUNT_ID')[:10]}...")
-        print(f"Access Token: {os.getenv('IG_ACCESS_TOKEN')[:20]}...")
+        print(f"Access Token: {os.getenv('INSTAGRAM_ACCESS_TOKEN')[:20]}...")
         
         # Test upload (uncomment to test)
         # config = InstagramConfig()

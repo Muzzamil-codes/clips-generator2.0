@@ -129,9 +129,18 @@ class PipelineConfig:
     # Background music settings
     enable_bg_music: bool = True  # Enable/disable background music
     default_bg_music: str = "bg_music.mp3"  # Default background music file
-    bg_music_volume: float = 0.15  # Background music volume (0.0 to 1.0)
+    bg_music_volume: float = 0.48  # Background music volume (0.0 to 1.0)
     use_discord_for_music: bool = True  # Use Discord for music selection
     discord_music_timeout: int = 1200  # Seconds to wait for Discord music selection
+    
+    # Smart audio sync settings (sync music drop with voice peak)
+    enable_smart_sync: bool = True  # Enable intelligent music-voice sync
+    smart_sync_voice_peak_time: float = None  # Manual override for voice peak time (seconds), None = auto-detect
+    enable_audio_ducking: bool = True  # Lower music during speech, boost at climax
+    ducking_low_volume: float = 0.15  # Music volume during speech
+    ducking_high_volume: float = 0.6  # Music volume at climax/drops
+    ducking_attack_ms: int = 50  # How fast to duck (ms)
+    ducking_release_ms: int = 300  # How fast to unduck (ms)
     
     def __post_init__(self):
         if self.instagram_tags is None:
@@ -853,6 +862,9 @@ class PodcastToShortsPipeline:
         # Step 1: Get input video
         if input_video is None:
             input_video = self.get_random_video()
+            self._last_random_video = input_video  # Track for deletion
+        else:
+            self._last_random_video = None
         
         if input_video is None or not os.path.exists(input_video):
             print("[ERROR] No valid input video")
@@ -1228,13 +1240,21 @@ class PodcastToShortsPipeline:
         print("PIPELINE COMPLETE!")
         print("="*60)
         print(f"[SUCCESS] Final video saved to: {output_video_path}")
-        
+
         if youtube_result and youtube_result.get('success'):
             print(f"[SUCCESS] YouTube URL: {youtube_result.get('url')}")
-        
+
         if instagram_result and instagram_result.get('permalink'):
             print(f"[SUCCESS] Instagram URL: {instagram_result.get('permalink')}")
-        
+
+        # Delete the input video if it was randomly chosen and pipeline succeeded
+        if self._last_random_video and os.path.exists(self._last_random_video):
+            try:
+                os.remove(self._last_random_video)
+                print(f"[INFO] Deleted input video: {self._last_random_video}")
+            except Exception as e:
+                print(f"[WARNING] Failed to delete input video: {e}")
+
         return output_video_path
     
     def _upload_to_youtube(self, video_path: str, transcription_data: Optional[Dict],
@@ -1387,9 +1407,90 @@ class PodcastToShortsPipeline:
             print(f"[MUSIC] Discord disabled, using default: {default_music}")
             return default_music
     
+    def _analyze_music_drop(self, music_path: str) -> float:
+        """
+        Analyze music to find the 'drop' - the moment with highest sudden increase in energy.
+        
+        Args:
+            music_path: Path to the music file
+            
+        Returns:
+            Time in seconds where the drop occurs
+        """
+        try:
+            import librosa
+            import numpy as np
+            
+            print("[SYNC] Analyzing music for the 'drop'...")
+            
+            # Load music audio
+            y_music, sr_music = librosa.load(music_path)
+            
+            # Calculate 'onset strength' (sudden changes in audio)
+            # This finds the "hit" of the beat better than just volume
+            onset_env = librosa.onset.onset_strength(y=y_music, sr=sr_music)
+            
+            # Find the frame with the highest energy jump (The Drop)
+            drop_frame = np.argmax(onset_env)
+            music_drop_time = librosa.frames_to_time(drop_frame, sr=sr_music)
+            
+            print(f"[SYNC] Music drop found at: {music_drop_time:.2f} seconds")
+            return music_drop_time
+            
+        except ImportError:
+            print("[SYNC] librosa not installed. Install with: pip install librosa")
+            return 0.0
+        except Exception as e:
+            print(f"[SYNC] Error analyzing music: {e}")
+            return 0.0
+    
+    def _analyze_voice_peak(self, video_path: str) -> float:
+        """
+        Analyze voice/speech to find the 'peak' - the loudest/most intense moment.
+        
+        Args:
+            video_path: Path to the video file
+            
+        Returns:
+            Time in seconds where the voice peak occurs
+        """
+        try:
+            import librosa
+            import numpy as np
+            
+            print("[SYNC] Analyzing voice for the 'climax'...")
+            
+            # Load audio from video
+            y_voice, sr_voice = librosa.load(video_path)
+            
+            # Calculate RMS energy (loudness over time)
+            rms = librosa.feature.rms(y=y_voice)[0]
+            
+            # Find the loudest moment
+            peak_frame = np.argmax(rms)
+            voice_peak_time = librosa.frames_to_time(peak_frame, sr=sr_voice)
+            
+            print(f"[SYNC] Voice peak found at: {voice_peak_time:.2f} seconds")
+            return voice_peak_time
+            
+        except ImportError:
+            print("[SYNC] librosa not installed. Install with: pip install librosa")
+            return 0.0
+        except Exception as e:
+            print(f"[SYNC] Error analyzing voice: {e}")
+            return 0.0
+    
     def _add_background_music(self, video_path: str, music_path: str, output_path: str) -> bool:
         """
-        Add background music to video while preserving original audio.
+        Add background music to video with smart sync and optional ducking.
+        
+        Smart Sync Logic:
+        - Find the 'drop' in the music (highest energy spike)
+        - Find the 'peak' in the voice (loudest moment)
+        - Crop/offset the music so these two moments align perfectly
+        
+        Example: If voice peak is at 5s and music drop is at 30s,
+        we skip the first 25s of music so the drop happens at 5s.
         
         Args:
             video_path: Path to the input video
@@ -1412,28 +1513,111 @@ class PodcastToShortsPipeline:
                 continue
         
         try:
-            # Get video duration
-            probe_cmd = [
-                ffmpeg_cmd, "-i", video_path,
-                "-f", "null", "-"
-            ]
-            result = subprocess.run(probe_cmd, capture_output=True, text=True)
+            # Calculate where to start the music for peak alignment
+            music_seek_time = 0.0  # How many seconds to skip into the music
+            music_delay_ms = 0     # How many ms to delay music start (if needed)
             
-            # Volume for background music (lower to not overpower speech)
+            if self.config.enable_smart_sync:
+                print("\n[SYNC] ═══════════════════════════════════════════")
+                print("[SYNC] SMART AUDIO SYNC - Aligning music drop with voice peak")
+                print("[SYNC] ═══════════════════════════════════════════")
+                
+                # Step 1: Find the music drop (highest energy spike)
+                music_drop_time = self._analyze_music_drop(music_path)
+                
+                # Step 2: Find the voice peak (loudest/most intense moment)
+                if self.config.smart_sync_voice_peak_time is not None:
+                    voice_peak_time = self.config.smart_sync_voice_peak_time
+                    print(f"[SYNC] Voice peak (manual): {voice_peak_time:.2f}s")
+                else:
+                    voice_peak_time = self._analyze_voice_peak(video_path)
+                
+                # Step 3: Calculate how to align them
+                # We want: when video reaches voice_peak_time, music should be at music_drop_time
+                # 
+                # If voice peak is at 5s and music drop is at 30s:
+                #   - We need to skip 25s of music (start music from 25s mark)
+                #   - So at video time 5s, we're at music time 30s (the drop!)
+                #
+                # If voice peak is at 20s and music drop is at 10s:
+                #   - We can't skip negative time, so we delay music start by 10s
+                #   - Music starts at video time 10s, drop happens at video time 20s
+                
+                offset = music_drop_time - voice_peak_time
+                
+                print(f"\n[SYNC] Calculation:")
+                print(f"[SYNC]   Voice peak at: {voice_peak_time:.2f}s (in video)")
+                print(f"[SYNC]   Music drop at: {music_drop_time:.2f}s (in music file)")
+                print(f"[SYNC]   Offset needed: {offset:.2f}s")
+                
+                if offset >= 0:
+                    # Music drop is later than voice peak
+                    # Solution: Skip into the music file
+                    music_seek_time = offset
+                    print(f"\n[SYNC] → Cropping first {music_seek_time:.2f}s of music")
+                    print(f"[SYNC] → Music drop will now align with voice peak at {voice_peak_time:.2f}s")
+                else:
+                    # Music drop is earlier than voice peak
+                    # Solution: Delay the music start
+                    music_delay_ms = int(abs(offset) * 1000)
+                    print(f"\n[SYNC] → Delaying music start by {abs(offset):.2f}s")
+                    print(f"[SYNC] → Music drop will align with voice peak at {voice_peak_time:.2f}s")
+                
+                print("[SYNC] ═══════════════════════════════════════════\n")
+            
+            # Build FFmpeg filter based on settings
             bg_volume = self.config.bg_music_volume
             
-            # FFmpeg command to mix audio
-            # - Takes video input
-            # - Takes music input, loops if necessary
-            # - Mixes original audio with background music at reduced volume
-            cmd = [
-                ffmpeg_cmd,
-                "-y",
-                "-i", video_path,  # Input video
-                "-stream_loop", "-1",  # Loop music if shorter than video
-                "-i", music_path,  # Background music
-                "-filter_complex",
-                f"[1:a]volume={bg_volume}[music];[0:a][music]amix=inputs=2:duration=first:dropout_transition=2[aout]",
+            if self.config.enable_audio_ducking:
+                # Audio ducking: Lower music during speech, boost during silence/climax
+                high_vol = self.config.ducking_high_volume
+                attack = self.config.ducking_attack_ms / 1000.0
+                release = self.config.ducking_release_ms / 1000.0
+                
+                if music_delay_ms > 0:
+                    # With delay
+                    filter_complex = (
+                        f"[1:a]adelay={music_delay_ms}|{music_delay_ms},volume={high_vol}[music_delayed];"
+                        f"[music_delayed][0:a]sidechaincompress=threshold=0.02:ratio=8:attack={attack}:release={release}:level_sc=1[ducked];"
+                        f"[0:a][ducked]amix=inputs=2:duration=first:dropout_transition=2[aout]"
+                    )
+                else:
+                    # Without delay
+                    filter_complex = (
+                        f"[1:a]volume={high_vol}[music_vol];"
+                        f"[music_vol][0:a]sidechaincompress=threshold=0.02:ratio=8:attack={attack}:release={release}:level_sc=1[ducked];"
+                        f"[0:a][ducked]amix=inputs=2:duration=first:dropout_transition=2[aout]"
+                    )
+                print(f"[MUSIC] Audio ducking enabled (volume: {high_vol})")
+            else:
+                # Simple volume mix without ducking
+                if music_delay_ms > 0:
+                    filter_complex = (
+                        f"[1:a]adelay={music_delay_ms}|{music_delay_ms},volume={bg_volume}[music];"
+                        f"[0:a][music]amix=inputs=2:duration=first:dropout_transition=2[aout]"
+                    )
+                else:
+                    filter_complex = (
+                        f"[1:a]volume={bg_volume}[music];"
+                        f"[0:a][music]amix=inputs=2:duration=first:dropout_transition=2[aout]"
+                    )
+            
+            # Build FFmpeg command
+            cmd = [ffmpeg_cmd, "-y"]
+            
+            # Input 0: Video with voice
+            cmd.extend(["-i", video_path])
+            
+            # Input 1: Music (with seek if needed to crop the beginning)
+            if music_seek_time > 0:
+                cmd.extend(["-ss", f"{music_seek_time:.3f}"])
+            
+            cmd.extend(["-stream_loop", "-1"])  # Loop music if shorter than video
+            cmd.extend(["-i", music_path])
+            
+            # Apply filter and output
+            cmd.extend([
+                "-filter_complex", filter_complex,
                 "-map", "0:v",  # Use video from first input
                 "-map", "[aout]",  # Use mixed audio
                 "-c:v", "copy",  # Copy video codec (no re-encoding)
@@ -1441,12 +1625,12 @@ class PodcastToShortsPipeline:
                 "-b:a", "192k",
                 "-shortest",  # End when shortest input ends
                 output_path
-            ]
+            ])
             
-            print(f"[MUSIC] Mixing background music (volume: {bg_volume})...")
-            subprocess.run(cmd, check=True, capture_output=True)
+            print(f"[MUSIC] Mixing background music...")
+            result = subprocess.run(cmd, check=True, capture_output=True)
             
-            print(f"[MUSIC] Successfully added background music")
+            print(f"[MUSIC] Successfully added background music with smart sync")
             return True
             
         except subprocess.CalledProcessError as e:
@@ -1454,6 +1638,8 @@ class PodcastToShortsPipeline:
             return False
         except Exception as e:
             print(f"[MUSIC] Error adding background music: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def _cleanup_word_images(self):
@@ -2034,13 +2220,41 @@ def main():
     parser.add_argument(
         "--music-volume",
         type=float,
-        default=0.15,
-        help="Background music volume 0.0-1.0 (default: 0.15)"
+        default=0.35,
+        help="Background music volume 0.0-1.0 (default: 0.35)"
     )
     parser.add_argument(
         "--no-discord-music",
         action="store_true",
         help="Disable Discord music selection (use default music directly)"
+    )
+    parser.add_argument(
+        "--no-smart-sync",
+        action="store_true",
+        help="Disable smart audio sync (music drop + voice peak alignment)"
+    )
+    parser.add_argument(
+        "--voice-peak",
+        type=float,
+        default=None,
+        help="Manual voice peak time in seconds for smart sync (auto-detect if not set)"
+    )
+    parser.add_argument(
+        "--no-ducking",
+        action="store_true",
+        help="Disable audio ducking (music volume stays constant)"
+    )
+    parser.add_argument(
+        "--ducking-low",
+        type=float,
+        default=0.15,
+        help="Music volume during speech when ducking (default: 0.15)"
+    )
+    parser.add_argument(
+        "--ducking-high",
+        type=float,
+        default=0.6,
+        help="Music volume at climax/drops when ducking (default: 0.6)"
     )
     
     args = parser.parse_args()
@@ -2062,6 +2276,11 @@ def main():
     config.default_bg_music = args.music_file
     config.bg_music_volume = args.music_volume
     config.use_discord_for_music = not args.no_discord_music
+    config.enable_smart_sync = not args.no_smart_sync
+    config.smart_sync_voice_peak_time = args.voice_peak
+    config.enable_audio_ducking = not args.no_ducking
+    config.ducking_low_volume = args.ducking_low
+    config.ducking_high_volume = args.ducking_high
     
     # Create and run pipeline
     pipeline = PodcastToShortsPipeline(config)
