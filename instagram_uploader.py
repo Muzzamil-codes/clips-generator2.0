@@ -336,31 +336,182 @@ class InstagramUploader:
 
 
 # =============================================================================
-# STANDALONE TEST
+# STANDALONE TEST & CLI
 # =============================================================================
 
-if __name__ == "__main__":
-    print("Instagram Uploader Test")
-    print("=" * 60)
+def main():
+    """Command-line interface for Instagram uploader."""
+    import argparse
     
-    # Check environment variables
-    required_vars = ["IG_BUSINESS_ACCOUNT_ID", "INSTAGRAM_ACCESS_TOKEN"]
-    missing = [v for v in required_vars if not os.getenv(v)]
+    parser = argparse.ArgumentParser(
+        description="Upload videos to Instagram Reels",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python instagram_uploader.py --video output/video_final.mp4 --caption "Check this out!" --title "My Video"
+  python instagram_uploader.py -v output/video.mp4 -c "Cool video" -t "Title"
+  python instagram_uploader.py --video video.mp4 --caption "Test" --account-id YOUR_ID --token YOUR_TOKEN
+        """
+    )
     
-    if missing:
-        print(f"Missing environment variables: {missing}")
-        print("Please set them in your .env file")
-    else:
-        print("Environment variables found!")
-        print(f"Business Account ID: {os.getenv('IG_BUSINESS_ACCOUNT_ID')[:10]}...")
-        print(f"Access Token: {os.getenv('INSTAGRAM_ACCESS_TOKEN')[:20]}...")
+    parser.add_argument(
+        "--video", "-v",
+        type=str,
+        required=True,
+        help="Path to video file to upload"
+    )
+    
+    parser.add_argument(
+        "--caption", "-c",
+        type=str,
+        default="Check out this amazing content! 🎬",
+        help="Caption for the Reel (default: 'Check out this amazing content! 🎬')"
+    )
+    
+    parser.add_argument(
+        "--title", "-t",
+        type=str,
+        default="",
+        help="Title for logging purposes (optional)"
+    )
+    
+    parser.add_argument(
+        "--account-id",
+        type=str,
+        help="Instagram Business Account ID (uses env var if not provided)"
+    )
+    
+    parser.add_argument(
+        "--token",
+        type=str,
+        help="Instagram Access Token (uses env var if not provided)"
+    )
+    
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=3000,
+        help="Port for HTTP server (default: 3000)"
+    )
+    
+    parser.add_argument(
+        "--thumb-offset",
+        type=int,
+        default=500,
+        help="Thumbnail offset in milliseconds (default: 500)"
+    )
+    
+    parser.add_argument(
+        "--audio-name",
+        type=str,
+        default="Original Audio",
+        help="Audio name for the Reel (default: 'Original Audio')"
+    )
+    
+    parser.add_argument(
+        "--no-share-feed",
+        action="store_true",
+        help="Don't share to feed (Reel only)"
+    )
+    
+    parser.add_argument(
+        "--tags",
+        type=str,
+        default="@airwallex @awxblackjz",
+        help="Tags to include in caption (space-separated, default: '@airwallex @awxblackjz')"
+    )
+    
+    args = parser.parse_args()
+    
+    print("=" * 70)
+    print("INSTAGRAM UPLOADER - CLI TEST")
+    print("=" * 70)
+    
+    # Check if video exists
+    if not os.path.exists(args.video):
+        print(f"❌ Error: Video file not found: {args.video}")
+        return False
+    
+    print(f"✓ Video file found: {args.video}")
+    print(f"  Caption: {args.caption}")
+    print(f"  Title: {args.title or '(no title)'}")
+    print(f"  Port: {args.port}")
+    print(f"  Thumb offset: {args.thumb_offset}ms")
+    print(f"  Audio name: {args.audio_name}")
+    print(f"  Share to feed: {not args.no_share_feed}")
+    print(f"  Tags: {args.tags}")
+    print()
+    
+    # Build config
+    try:
+        account_id = args.account_id or os.getenv("IG_BUSINESS_ACCOUNT_ID")
+        access_token = args.token or os.getenv("INSTAGRAM_ACCESS_TOKEN")
         
-        # Test upload (uncomment to test)
-        # config = InstagramConfig()
-        # uploader = InstagramUploader(config)
-        # result = uploader.upload(
-        #     video_path="output/test_video.mp4",
-        #     caption="Test upload from automation pipeline! 🚀",
-        #     title="Test Video"
-        # )
-        # print(f"Result: {result}")
+        if not account_id:
+            print("❌ Error: Instagram Business Account ID not provided")
+            print("   Use --account-id or set IG_BUSINESS_ACCOUNT_ID in .env")
+            return False
+        
+        if not access_token:
+            print("❌ Error: Instagram Access Token not provided")
+            print("   Use --token or set INSTAGRAM_ACCESS_TOKEN in .env")
+            return False
+        
+        print(f"✓ Business Account ID: {account_id[:15]}...")
+        print(f"✓ Access Token: {access_token[:20]}...")
+        print()
+        
+        # Create config
+        config = InstagramConfig(
+            business_account_id=account_id,
+            access_token=access_token,
+            port=args.port,
+            thumb_offset=args.thumb_offset,
+            audio_name=args.audio_name,
+            share_to_feed=not args.no_share_feed,
+            tags=args.tags.split()
+        )
+        
+        # Create uploader and upload
+        print("=" * 70)
+        print("STARTING UPLOAD")
+        print("=" * 70)
+        
+        uploader = InstagramUploader(config)
+        result = uploader.upload(
+            video_path=args.video,
+            caption=args.caption,
+            title=args.title
+        )
+        
+        # Print results
+        print()
+        print("=" * 70)
+        if result:
+            print("✅ UPLOAD SUCCESSFUL!")
+            print("=" * 70)
+            print(f"Media ID: {result['media_id']}")
+            print(f"Permalink: {result['permalink']}")
+            print()
+            print(f"🔗 Watch your Reel: {result['permalink']}")
+            return True
+        else:
+            print("❌ UPLOAD FAILED")
+            print("=" * 70)
+            print("Check the error messages above for details")
+            return False
+        
+    except Exception as e:
+        print()
+        print("=" * 70)
+        print("❌ ERROR DURING UPLOAD")
+        print("=" * 70)
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+if __name__ == "__main__":
+    success = main()
+    exit(0 if success else 1)
